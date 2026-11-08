@@ -1,0 +1,42 @@
+<idea-plugin>
+    <id>dev.bun.bun-actions-on-save</id>
+    <name>Bun Actions on Save</name>
+    <vendor>Bun Actions on Save</vendor>
+    <description><![CDATA[
+        <p>Format and lint supported files with Bun as you work. Bun actions appear directly in the IDE's native Actions on Save settings.</p>
+        <ul>
+            <li><b>Run bun fmt</b> to format selected file types.</li>
+            <li><b>Run bun lint --fix</b> to lint selected file types and apply safe fixes.</li>
+            <li>Optionally show Bun lint warnings and errors in the editor while you edit, independently of lint fixes on save.</li>
+            <li>Choose file types independently for formatting and linting.</li>
+            <li>Use automatic configuration to run Bun from PATH, or manual configuration to select a Bun executable.</li>
+            <li>Enable or disable formatting and linting separately, or disable Bun actions entirely.</li>
+        </ul>
+        <p>Configure the plugin in <b>Settings | Tools | Bun</b>. The Actions on Save entries stay in sync with the selected configuration.</p>
+    ]]></description>
+    <depends>com.intellij.modules.platform</depends>
+    <depends>JavaScript</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <projectConfigurable
+                parentId="tools"
+                instance="dev.bun.actions.BunSettingsConfigurable"
+                id="dev.bun.actions.settings"
+                displayName="Bun"/>
+        <projectService serviceImplementation="dev.bun.actions.BunSettings"/>
+        <projectService serviceImplementation="dev.bun.actions.BunLiveLintService"/>
+        <postStartupActivity implementation="dev.bun.actions.BunLiveLintStartupActivity"/>
+        <externalAnnotator language="JavaScript" implementationClass="dev.bun.actions.BunJavaScriptLiveLintAnnotator"/>
+        <externalAnnotator language="TypeScript" implementationClass="dev.bun.actions.BunTypeScriptLiveLintAnnotator"/>
+        <externalAnnotator language="TypeScript JSX" implementationClass="dev.bun.actions.BunTypeScriptJsxLiveLintAnnotator"/>
+        <actionOnSaveInfoProvider id="BunFormatOnSaveInfoProvider"
+                                  implementation="dev.bun.actions.BunFormatActionOnSaveInfoProvider"
+                                  order="after PrettierOnSaveInfoProvider, before FileWatcherOnSaveInfoProvider, before UploadOnSaveInfoProvider"/>
+        <actionOnSaveInfoProvider id="BunLintOnSaveInfoProvider"
+                                  implementation="dev.bun.actions.BunLintActionOnSaveInfoProvider"
+                                  order="after EsLintOnSaveInfoProvider, before PrettierOnSaveInfoProvider, before copyrightInfoProvider, before BuildOnSaveInfoProvider, before FileWatcherOnSaveInfoProvider, before UploadOnSaveInfoProvider"/>
+        <actionOnSave implementation="dev.bun.actions.BunActionOnSave"
+                       order="after PrettierActionOnSave"/>
+        <notificationGroup id="Bun Actions" displayType="BALLOON" />
+    </extensions>
+</idea-plugin>
