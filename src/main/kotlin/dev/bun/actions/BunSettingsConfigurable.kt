@@ -3,8 +3,9 @@ package dev.bun.actions
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.options.ConfigurationException
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.fileChooser.FileChooserDescriptor
+import com.intellij.openapi.ui.TextComponentAccessor
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
-import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBRadioButton
 import com.intellij.util.ui.FormBuilder
@@ -41,11 +42,12 @@ class BunSettingsConfigurable(private val project: Project) : Configurable {
             add(manual)
         }
         val settings = BunSettings.get(project)
+        val executableDescriptor = FileChooserDescriptor(true, false, false, false, false, false)
+            .withTitle("Select Bun executable")
         executable.addBrowseFolderListener(
-            "Select Bun executable",
-            "Choose the Bun executable to use in Manual Bun configuration",
             project,
-            FileChooserDescriptorFactory.createSingleFileDescriptor(),
+            executableDescriptor,
+            TextComponentAccessor.TEXT_FIELD_WHOLE_TEXT,
         )
         selectedFormatTypes = BunFileTypes.selected(settings, BunTask.FORMAT)
         selectedLintTypes = BunFileTypes.selected(settings, BunTask.LINT)

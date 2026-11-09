@@ -12,6 +12,6 @@ class BunLiveLintStartupActivity : StartupActivity.DumbAware {
 
 class BunLiveLintService(private val project: Project) {
     fun configurationChanged() {
-        if (!project.isDisposed) DaemonCodeAnalyzer.getInstance(project).restart()
+        if (!project.isDisposed) DaemonCodeAnalyzer.getInstance(project).restart("Bun live lint settings changed")
     }
 }

@@ -1,8 +1,6 @@
 package dev.bun.actions
 
 import com.intellij.execution.configurations.GeneralCommandLine
-import com.intellij.execution.process.CapturingProcessHandler
-import com.intellij.execution.process.ProcessOutput
 import com.intellij.ide.actionsOnSave.ActionOnSaveContext
 import com.intellij.ide.actionsOnSave.ActionOnSaveInfo
 import com.intellij.ide.actionsOnSave.ActionOnSaveInfoProvider
@@ -10,14 +8,18 @@ import com.intellij.ide.actionsOnSave.impl.ActionsOnSaveFileDocumentManagerListe
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
-import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
+import com.google.gson.JsonParser
 import java.io.File
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 
 class BunFormatActionOnSaveInfoProvider : ActionOnSaveInfoProvider() {
     override fun getActionOnSaveInfos(context: ActionOnSaveContext): Collection<ActionOnSaveInfo> =
@@ -141,41 +143,110 @@ class BunActionOnSave : ActionsOnSaveFileDocumentManagerListener.ActionOnSave() 
 
             val key = file.path
             if (!running.add(key)) return@forEach
+            val originalText = document.text
+            val originalStamp = document.modificationStamp
             ApplicationManager.getApplication().executeOnPooledThread {
+                var scheduledApply = false
                 try {
-                    if (format) run(project, executable, projectPath, listOf("fmt", file.path))
-                    if (lint) run(project, executable, projectPath, buildList {
-                        add("lint")
-                        add("--fix")
-                        add(file.path)
-                    })
-                    if (format || lint) refreshDocument(project, document, file)
+                    var updatedText = originalText
+                    if (format) {
+                        updatedText = runWithText(
+                            project, executable, projectPath,
+                            listOf("fmt", "--stdin-filepath", file.path), updatedText,
+                        ) ?: return@executeOnPooledThread
+                    }
+                    if (lint) {
+                        val lintOutput = runWithText(
+                            project, executable, projectPath,
+                            listOf("lint", "--no-script", "--fix-dry-run", "--format", "json", "--stdin", "--stdin-filename", file.path),
+                            updatedText,
+                            allowLintFindings = true,
+                        ) ?: return@executeOnPooledThread
+                        updatedText = fixedText(lintOutput) ?: updatedText
+                    }
+                    if (updatedText != originalText) {
+                        scheduledApply = true
+                        ApplicationManager.getApplication().invokeLater {
+                            try {
+                                if (project.isDisposed || document.modificationStamp != originalStamp) return@invokeLater
+                                WriteCommandAction.runWriteCommandAction(project, "Bun Actions on Save", null, Runnable {
+                                    if (!project.isDisposed && document.modificationStamp == originalStamp) {
+                                        document.setText(updatedText)
+                                    }
+                                })
+                                if (!project.isDisposed && document.text == updatedText) {
+                                    FileDocumentManager.getInstance().saveDocument(document)
+                                }
+                            } finally {
+                                running.remove(key)
+                            }
+                        }
+                    }
                 } finally {
-                    running.remove(key)
+                    if (!scheduledApply) running.remove(key)
                 }
             }
         }
     }
 
-    private fun refreshDocument(project: Project, document: Document, file: VirtualFile) {
-        LocalFileSystem.getInstance().refreshAndFindFileByIoFile(File(file.path)) ?: return
-        ApplicationManager.getApplication().invokeLater {
-            val manager = FileDocumentManager.getInstance()
-            if (!project.isDisposed && !manager.isDocumentUnsaved(document)) manager.reloadFromDisk(document)
+    private fun runWithText(
+        project: Project,
+        executable: String,
+        workingDirectory: String,
+        args: List<String>,
+        inputText: String,
+        allowLintFindings: Boolean = false,
+    ): String? {
+        val process = try {
+            GeneralCommandLine(executable).withWorkDirectory(workingDirectory).withParameters(args).createProcess()
+        } catch (error: Exception) {
+            notifyFailure(project, args.first(), error.message ?: "Could not start Bun.")
+            return null
+        }
+        val stdout = CompletableFuture.supplyAsync {
+            process.inputStream.readBytes().toString(StandardCharsets.UTF_8)
+        }
+        val stderr = CompletableFuture.supplyAsync {
+            process.errorStream.readBytes().toString(StandardCharsets.UTF_8)
+        }
+        try {
+            process.outputStream.bufferedWriter(StandardCharsets.UTF_8).use { it.write(inputText) }
+            if (!process.waitFor(60, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                notifyFailure(project, args.first(), "Bun did not finish within 60 seconds.")
+                return null
+            }
+            val outputText = stdout.get(2, TimeUnit.SECONDS)
+            val errorText = stderr.get(2, TimeUnit.SECONDS)
+            val expectedLintExit = allowLintFindings && process.exitValue() == 1
+            if (process.exitValue() != 0 && !expectedLintExit) {
+                notifyFailure(project, args.first(), (errorText.ifBlank { outputText }).take(1500)
+                    .ifBlank { "Bun exited with code ${process.exitValue()}." })
+                return null
+            }
+            return outputText
+        } catch (error: Exception) {
+            process.destroyForcibly()
+            notifyFailure(project, args.first(), error.message ?: "Could not read Bun output.")
+            return null
         }
     }
 
-    private fun run(project: Project, executable: String, workingDirectory: String, args: List<String>): ProcessOutput {
-        val command = GeneralCommandLine(executable).withWorkDirectory(workingDirectory).withParameters(args)
-        val output = CapturingProcessHandler(command).runProcess(60_000)
-        if (output.exitCode != 0 && !project.isDisposed) {
-            val text = (output.stderr.ifBlank { output.stdout }).take(1500)
-                .ifBlank { "Bun exited with code ${output.exitCode}." }
+    private fun fixedText(output: String): String? = try {
+        val jsonStart = output.indexOf('[')
+        if (jsonStart < 0) return null
+        val report = JsonParser.parseString(output.substring(jsonStart)).asJsonArray.firstOrNull()?.asJsonObject ?: return null
+        report.get("output")?.takeUnless { it.isJsonNull }?.asString
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun notifyFailure(project: Project, command: String, text: String) {
+        if (!project.isDisposed) {
             NotificationGroupManager.getInstance().getNotificationGroup("Bun Actions")
-                .createNotification("Bun ${args.first()} failed", text, NotificationType.WARNING)
+                .createNotification("Bun $command failed", text, NotificationType.WARNING)
                 .notify(project)
         }
-        return output
     }
 
     companion object {

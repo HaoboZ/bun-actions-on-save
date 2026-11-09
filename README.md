@@ -24,3 +24,11 @@ Automatic mode uses Bun's supported defaults: `bun fmt` handles JavaScript, Type
 ## Build
 
 Run `gradle buildPlugin` to create a plugin ZIP in `build/distributions`, or `gradle runIde` to launch a development IDE.
+## Plugin signing
+
+The signing key and certificate chain are stored outside this repository in:
+
+- `%APPDATA%\BunPluginSigning\private.pem` — private signing key
+- `%APPDATA%\BunPluginSigning\chain.crt` — certificate chain
+
+Set `BUN_PLUGIN_PRIVATE_KEY_FILE` and `BUN_PLUGIN_CERTIFICATE_CHAIN_FILE` to those file paths before running the Gradle `signPlugin` task. Keep the key outside the repository and do not commit it.
